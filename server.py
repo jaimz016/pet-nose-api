@@ -6,18 +6,27 @@ from fastapi.responses import JSONResponse
 import firebase_admin
 from firebase_admin import credentials, storage
 from sklearn.metrics import roc_curve
-
+import json
 # ---------------------------
-# Firebase Init
+# Firebase Init (robust for env JSON or file path)
 # ---------------------------
-cred_path = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
+cred_env = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")  # we will set this in Railway
 bucket_name = os.environ.get("FIREBASE_STORAGE_BUCKET")
-cred = credentials.Certificate(cred_path)
+
+if not cred_env:
+    raise RuntimeError("Set FIREBASE_SERVICE_ACCOUNT_JSON env var in Railway and FIREBASE_STORAGE_BUCKET")
+
+try:
+    # If the env value is a JSON string, parse it
+    cred_data = json.loads(cred_env)
+    cred = credentials.Certificate(cred_data)
+except (json.JSONDecodeError, TypeError):
+    # Otherwise treat it as a path
+    cred = credentials.Certificate(cred_env)
+
 firebase_admin.initialize_app(cred, {"storageBucket": bucket_name})
 bucket = storage.bucket()
-
 print("Firebase initialized successfully.")
-
 # ---------------------------
 # ORB setup
 # ---------------------------

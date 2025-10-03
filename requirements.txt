@@ -1,6 +1,7 @@
 fastapi
-uvicorn
+uvicorn[standard]
 firebase-admin
-opencv-python-headless
 numpy
 scikit-learn
+opencv-python-headless
+python-multipart
