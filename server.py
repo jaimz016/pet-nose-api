@@ -1,0 +1,219 @@
+import os
+import cv2
+import numpy as np
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import JSONResponse
+import firebase_admin
+from firebase_admin import credentials, storage
+from sklearn.metrics import roc_curve
+
+# ---------------------------
+# Firebase Init
+# ---------------------------
+cred_path = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
+bucket_name = os.environ.get("FIREBASE_STORAGE_BUCKET")
+cred = credentials.Certificate(cred_path)
+firebase_admin.initialize_app(cred, {"storageBucket": bucket_name})
+bucket = storage.bucket()
+
+print("Firebase initialized successfully.")
+
+# ---------------------------
+# ORB setup
+# ---------------------------
+orb = cv2.ORB_create(nfeatures=3000, scaleFactor=1.2, nlevels=8)
+
+# ---------------------------
+# Helper Functions
+# ---------------------------
+def extract_nose_roi_auto(img_bgr, target_size=224, margin=0.2):
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    cx, cy = w//2, h//2
+
+    blur = cv2.GaussianBlur(gray, (5,5), 0)
+    edges = cv2.Canny(blur, 50, 150)
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    best_c, best_dist = None, 1e9
+    for c in contours:
+        x, y, wc, hc = cv2.boundingRect(c)
+        ccx, ccy = x+wc//2, y+hc//2
+        area = wc*hc
+        dist = np.hypot(ccx-cx, ccy-cy)/(area+1e-6)
+        if area > 500 and dist < best_dist:
+            best_dist = dist
+            best_c = (x,y,wc,hc)
+
+    if best_c is None:
+        roi = gray
+    else:
+        x, y, wc, hc = best_c
+        dx, dy = int(wc*margin), int(hc*margin)
+        x1 = max(0, x-dx); y1 = max(0, y-dy)
+        x2 = min(w, x+wc+dx); y2 = min(h, y+hc+dy)
+        roi = gray[y1:y2, x1:x2]
+
+    resized = cv2.resize(roi, (target_size, target_size))
+    return resized
+
+def apply_CLAHE(gray):
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    return clahe.apply(gray)
+
+def extract_orb(gray):
+    kp, des = orb.detectAndCompute(gray, None)
+    return kp, des
+
+def match_orb(des1, des2, kp1, kp2, ratio=0.75):
+    if des1 is None or des2 is None:
+        return 0.0
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+    matches = bf.knnMatch(des1, des2, k=2)
+    good = [m for m,n in matches if len([m,n]) == 2 and m.distance < ratio*n.distance]
+    if len(good) >= 4:
+        src = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1,1,2)
+        dst = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1,1,2)
+        M, mask = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
+        inliers = int(mask.sum()) if mask is not None else len(good)
+    else:
+        inliers = len(good)
+    denom = max(len(kp1), len(kp2), 1)
+    return inliers / denom
+
+# ---------------------------
+# Data Augmentation
+# ---------------------------
+def augment_image(img):
+    """Return multiple augmented versions of the same image"""
+    aug_list = []
+
+    # Rotation
+    for angle in [-15, 0, 15]:
+        M = cv2.getRotationMatrix2D((img.shape[1]//2, img.shape[0]//2), angle, 1)
+        rotated = cv2.warpAffine(img, M, (img.shape[1], img.shape[0]))
+        aug_list.append(rotated)
+
+    # Brightness
+    brighter = cv2.convertScaleAbs(img, alpha=1.2, beta=30)
+    darker = cv2.convertScaleAbs(img, alpha=0.8, beta=-30)
+    aug_list.extend([brighter, darker])
+
+    # Blur
+    blurred = cv2.GaussianBlur(img, (5,5), 1)
+    aug_list.append(blurred)
+
+    return aug_list
+
+# ---------------------------
+# Database from Firebase
+# ---------------------------
+db = {}
+
+def build_db():
+    global db
+    print("Building DB...")
+    blobs = list(bucket.list_blobs(prefix="noseprints/"))
+    for blob in blobs:
+        if not blob.name.lower().endswith((".jpg", ".png", ".jpeg")):
+            continue
+
+        pet_id = blob.name.split('/')[1]
+        content = blob.download_as_bytes()
+        img_bgr = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
+
+        roi = extract_nose_roi_auto(img_bgr)
+        preproc = apply_CLAHE(roi)
+        kp, des = extract_orb(preproc)
+
+        if pet_id not in db:
+            db[pet_id] = []
+
+        # Original
+        db[pet_id].append({"des": des, "kp": kp, "path": blob.name})
+
+        # Augmented versions
+        for aug in augment_image(preproc):
+            kp_a, des_a = extract_orb(aug)
+            db[pet_id].append({"des": des_a, "kp": kp_a, "path": blob.name + "_aug"})
+
+    print("DB build complete.")
+
+build_db()
+
+# ---------------------------
+# FastAPI App
+# ---------------------------
+app = FastAPI()
+
+@app.post("/identify")
+async def identify(file: UploadFile = File(...)):
+    content = await file.read()
+    img_bgr = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
+    roi = extract_nose_roi_auto(img_bgr)
+    preproc = apply_CLAHE(roi)
+    kp_q, des_q = extract_orb(preproc)
+
+    scores = []
+    for pet_id, entries in db.items():
+        best = 0
+        for e in entries:
+            des_db = e["des"]
+            kp_db = e["kp"]
+            s = match_orb(des_q, des_db, kp_q, kp_db)
+            best = max(best, s)
+        scores.append({"pet_id": pet_id, "score": f"{best*100:.2f}%"})
+
+    scores.sort(key=lambda x: float(x["score"].replace("%","")), reverse=True)
+    return {"matches": scores[:3]}
+
+# ---------------------------
+# Inspect DB contents (runs once at startup)
+# ---------------------------
+print("Inspecting DB contents...")
+total_entries = 0
+for pet_id, entries in db.items():
+    print(f"\nPet ID: {pet_id}")
+    print(f"Total images (including augmented): {len(entries)}")
+    for e in entries:
+        print(f" - {e['path']}")
+    total_entries += len(entries)
+print(f"\nTotal entries in DB (all pets + augmented): {total_entries}")
+
+# ---------------------------
+# Evaluation Endpoint
+# ---------------------------
+@app.get("/evaluate")
+async def evaluate(threshold: float = 0.3):
+    genuine_scores, impostor_scores = [], []
+    pet_ids = list(db.keys())
+
+    for i, pid in enumerate(pet_ids):
+        entries = db[pid]
+        for e in entries:
+            des_q, kp_q = e["des"], e["kp"]
+            if des_q is None: continue
+
+            # Genuine comparisons
+            for e2 in entries:
+                if e["path"] == e2["path"]: continue
+                s = match_orb(des_q, e2["des"], kp_q, e2["kp"])
+                genuine_scores.append(s)
+
+            # Impostor comparisons
+            for j, pid2 in enumerate(pet_ids):
+                if pid == pid2: continue
+                for e2 in db[pid2]:
+                    s = match_orb(des_q, e2["des"], kp_q, e2["kp"])
+                    impostor_scores.append(s)
+
+    fmr = np.mean([s >= threshold for s in impostor_scores])
+    fnmr = np.mean([s < threshold for s in genuine_scores])
+
+    labels = np.concatenate([np.ones(len(genuine_scores)), np.zeros(len(impostor_scores))])
+    scores = np.concatenate([genuine_scores, impostor_scores])
+    fpr, tpr, thr = roc_curve(labels, scores)
+    fnr = 1 - tpr
+    eer = fpr[np.nanargmin(np.abs(fpr - fnr))]
+
+    return {"FMR": float(fmr), "FNMR": float(fnmr), "EER": float(eer)}

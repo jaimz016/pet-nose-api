@@ -1,0 +1,20 @@
+# Python cache files
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+
+# Firebase key
+serviceAccountKey.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Optional: Editor folders
+.vscode/
+.idea/
