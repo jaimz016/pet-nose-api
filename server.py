@@ -33,7 +33,7 @@ print("Firebase initialized successfully. Bucket:", bucket_name)
 # ---------------------------
 # ORB setup
 # ---------------------------
-orb = cv2.ORB_create(nfeatures=3000, scaleFactor=1.2, nlevels=8)
+orb = cv2.ORB_create(nfeatures=5000, scaleFactor=1.2, nlevels=8)
 
 # ---------------------------
 # Helper Functions
@@ -79,25 +79,34 @@ def extract_orb(gray):
 
 def match_orb(des1, des2, kp1, kp2, ratio=0.75):
     if des1 is None or des2 is None:
-        return 0.0
+        return 0
+
+    # Create BFMatcher
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
     matches = bf.knnMatch(des1, des2, k=2)
-    good = [m for m,n in matches if len([m,n]) == 2 and m.distance < ratio*n.distance]
-    if len(good) >= 4:
-        src = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1,1,2)
-        dst = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1,1,2)
-        M, mask = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
-        inliers = int(mask.sum()) if mask is not None else len(good)
-    else:
-        inliers = len(good)
-    denom = max(len(kp1), len(kp2), 1)
-    return inliers / denom
+
+    # Filter out invalid match pairs
+    good = []
+    for m_n in matches:
+        if len(m_n) < 2:
+            continue
+        m, n = m_n
+        if m.distance < ratio * n.distance:
+            good.append(m)
+
+    if not good:
+        return 0
+
+    # Compute score as ratio of good matches to total keypoints
+    score = len(good) / max(len(kp1), len(kp2))
+    return score
+
 
 # ---------------------------
-# Data Augmentation
+# Data Augmentation (Improved)
 # ---------------------------
 def augment_image(img):
-    """Return multiple augmented versions of the same image"""
+    """Return multiple augmented versions of the same image (rotation, flip, zoom, brightness, blur, noise)."""
     aug_list = []
 
     # Rotation
@@ -106,7 +115,7 @@ def augment_image(img):
         rotated = cv2.warpAffine(img, M, (img.shape[1], img.shape[0]))
         aug_list.append(rotated)
 
-    # Brightness
+    # Brightness variations
     brighter = cv2.convertScaleAbs(img, alpha=1.2, beta=30)
     darker = cv2.convertScaleAbs(img, alpha=0.8, beta=-30)
     aug_list.extend([brighter, darker])
@@ -115,7 +124,23 @@ def augment_image(img):
     blurred = cv2.GaussianBlur(img, (5,5), 1)
     aug_list.append(blurred)
 
+    # Horizontal Flip
+    flipped = cv2.flip(img, 1)
+    aug_list.append(flipped)
+
+    # Slight Zoom (crop and resize back)
+    h, w = img.shape
+    crop = img[int(0.05*h):int(0.95*h), int(0.05*w):int(0.95*w)]
+    zoomed = cv2.resize(crop, (w, h))
+    aug_list.append(zoomed)
+
+    # Add Gaussian Noise
+    noise = np.random.normal(0, 10, img.shape).astype(np.uint8)
+    noisy = cv2.add(img, noise)
+    aug_list.append(noisy)
+
     return aug_list
+
 
 # ---------------------------
 # Database from Firebase
@@ -204,17 +229,20 @@ async def evaluate(threshold: float = 0.3):
         entries = db[pid]
         for e in entries:
             des_q, kp_q = e["des"], e["kp"]
-            if des_q is None: continue
+            if des_q is None:
+                continue
 
             # Genuine comparisons
             for e2 in entries:
-                if e["path"] == e2["path"]: continue
+                if e["path"] == e2["path"]:
+                    continue
                 s = match_orb(des_q, e2["des"], kp_q, e2["kp"])
                 genuine_scores.append(s)
 
             # Impostor comparisons
             for j, pid2 in enumerate(pet_ids):
-                if pid == pid2: continue
+                if pid == pid2:
+                    continue
                 for e2 in db[pid2]:
                     s = match_orb(des_q, e2["des"], kp_q, e2["kp"])
                     impostor_scores.append(s)
@@ -229,6 +257,19 @@ async def evaluate(threshold: float = 0.3):
         np.array(impostor_scores) >= threshold
     ])
 
+    # --- Optional: Find best threshold automatically ---
+    best_acc, best_th = 0, 0
+    for t in np.linspace(0.05, 0.5, 10):
+        y_pred_t = np.concatenate([
+            np.array(genuine_scores) >= t,
+            np.array(impostor_scores) >= t
+        ])
+        acc_t = accuracy_score(y_true, y_pred_t)
+        if acc_t > best_acc:
+            best_acc, best_th = acc_t, t
+    print(f"Best Accuracy: {best_acc:.4f} at threshold {best_th:.2f}")
+    # -----------------------------------------------------
+
     # Metrics
     cm = confusion_matrix(y_true, y_pred)
     acc = accuracy_score(y_true, y_pred)
@@ -236,7 +277,7 @@ async def evaluate(threshold: float = 0.3):
     rec = recall_score(y_true, y_pred, zero_division=0)
     f1 = f1_score(y_true, y_pred, zero_division=0)
 
-    # FMR / FNMR / EER (same as before)
+    # FMR / FNMR / EER
     fmr = np.mean([s >= threshold for s in impostor_scores])
     fnmr = np.mean([s < threshold for s in genuine_scores])
 
