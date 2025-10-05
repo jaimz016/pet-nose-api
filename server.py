@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 import firebase_admin
 from firebase_admin import credentials, storage
 from sklearn.metrics import roc_curve
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
 import json
 # ---------------------------
 # Firebase Init (robust for env JSON or file path)
@@ -218,13 +219,39 @@ async def evaluate(threshold: float = 0.3):
                     s = match_orb(des_q, e2["des"], kp_q, e2["kp"])
                     impostor_scores.append(s)
 
+    # Convert to binary predictions
+    y_true = np.concatenate([
+        np.ones(len(genuine_scores)),  # genuine = 1
+        np.zeros(len(impostor_scores)) # impostor = 0
+    ])
+    y_pred = np.concatenate([
+        np.array(genuine_scores) >= threshold,
+        np.array(impostor_scores) >= threshold
+    ])
+
+    # Metrics
+    cm = confusion_matrix(y_true, y_pred)
+    acc = accuracy_score(y_true, y_pred)
+    prec = precision_score(y_true, y_pred, zero_division=0)
+    rec = recall_score(y_true, y_pred, zero_division=0)
+    f1 = f1_score(y_true, y_pred, zero_division=0)
+
+    # FMR / FNMR / EER (same as before)
     fmr = np.mean([s >= threshold for s in impostor_scores])
     fnmr = np.mean([s < threshold for s in genuine_scores])
 
-    labels = np.concatenate([np.ones(len(genuine_scores)), np.zeros(len(impostor_scores))])
-    scores = np.concatenate([genuine_scores, impostor_scores])
-    fpr, tpr, thr = roc_curve(labels, scores)
+    from sklearn.metrics import roc_curve
+    fpr, tpr, thr = roc_curve(y_true, np.concatenate([genuine_scores, impostor_scores]))
     fnr = 1 - tpr
     eer = fpr[np.nanargmin(np.abs(fpr - fnr))]
 
-    return {"FMR": float(fmr), "FNMR": float(fnmr), "EER": float(eer)}
+    return {
+        "Confusion_Matrix": cm.tolist(),
+        "Accuracy": float(acc),
+        "Precision": float(prec),
+        "Recall": float(rec),
+        "F1_Score": float(f1),
+        "FMR": float(fmr),
+        "FNMR": float(fnmr),
+        "EER": float(eer)
+    }
