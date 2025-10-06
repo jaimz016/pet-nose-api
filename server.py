@@ -185,6 +185,12 @@ build_db()
 # ---------------------------
 app = FastAPI()
 
+origins = [
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+    "https://yourfrontenddomain.com",  # add if deployed
+    "*",  # fallback
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -194,7 +200,12 @@ app.add_middleware(
 )
 
 @app.post("/identify")
-async def identify(file: UploadFile = File(...)):
+async def identify(file: UploadFile = File(...), min_score: float = 0.6):  # ← Set your threshold here
+    """
+    Identify pet nose print from uploaded image.
+    min_score: minimum matching score (0-1) to consider a valid match.
+    Default is 0.6 (60%).
+    """
     content = await file.read()
     img_bgr = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
     roi = extract_nose_roi_auto(img_bgr)
@@ -209,10 +220,31 @@ async def identify(file: UploadFile = File(...)):
             kp_db = e["kp"]
             s = match_orb(des_q, des_db, kp_q, kp_db)
             best = max(best, s)
-        scores.append({"pet_id": pet_id, "score": f"{best*100:.2f}%"})
+        scores.append({"pet_id": pet_id, "score": best, "score_percent": f"{best*100:.2f}%"})
 
-    scores.sort(key=lambda x: float(x["score"].replace("%","")), reverse=True)
-    return {"matches": scores[:3]}
+    # Sort by raw score for comparison
+    scores.sort(key=lambda x: x["score"], reverse=True)
+    
+    # Check if best match meets minimum threshold
+    if not scores or scores[0]["score"] < min_score:
+        return {
+            "success": False,
+            "message": "No matching pet found in database",
+            "best_score": scores[0]["score_percent"] if scores else "0.00%",
+            "threshold": f"{min_score*100:.0f}%"
+        }
+    
+    # Filter out matches below threshold and return top 3
+    valid_matches = [
+        {"pet_id": s["pet_id"], "score": s["score_percent"]} 
+        for s in scores if s["score"] >= min_score
+    ]
+    
+    return {
+        "success": True,
+        "message": f"Found {len(valid_matches)} matching pet(s)",
+        "matches": valid_matches[:3]
+    }
 
 # ---------------------------
 # Inspect DB contents (runs once at startup)
