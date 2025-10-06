@@ -9,6 +9,7 @@ from firebase_admin import credentials, storage
 from sklearn.metrics import roc_curve
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
 import json
+
 # ---------------------------
 # Firebase Init (robust for env JSON or file path)
 # ---------------------------
@@ -184,6 +185,12 @@ build_db()
 # ---------------------------
 app = FastAPI()
 
+origins = [
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+    "https://yourfrontenddomain.com",  # add if deployed
+    "*",  # fallback
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -214,19 +221,8 @@ async def identify(file: UploadFile = File(...), min_score: float = 0.4):
             best = max(best, s)
         scores.append({"pet_id": pet_id, "score": f"{best*100:.2f}%"})
 
-    if not filtered_scores:
-        # No match above threshold
-        return {"matches": [], "message": f"No match found above {min_score*100:.0f}% confidence."}
-
-    # Sort descending by score
-    filtered_scores.sort(key=lambda x: x["score"], reverse=True)
-
-    # Convert score to percentage string for consistency with frontend
-    for s in filtered_scores:
-        s["score"] = f"{s['score']*100:.2f}%"
-
-    # Return top 3 matches
-    return {"matches": filtered_scores[:3]}
+    scores.sort(key=lambda x: float(x["score"].replace("%","")), reverse=True)
+    return {"matches": scores[:3]}
 
 # ---------------------------
 # Inspect DB contents (runs once at startup)
