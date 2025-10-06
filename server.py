@@ -185,12 +185,6 @@ build_db()
 # ---------------------------
 app = FastAPI()
 
-origins = [
-    "http://127.0.0.1:5500",
-    "http://localhost:5500",
-    "https://yourfrontenddomain.com",  # add if deployed
-    "*",  # fallback
-]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -200,11 +194,7 @@ app.add_middleware(
 )
 
 @app.post("/identify")
-async def identify(file: UploadFile = File(...), min_score: float = 0.4):
-    """
-    Identify pet nose print from uploaded image.
-    min_score: minimum matching score (0-1) to consider a valid match.
-    """
+async def identify(file: UploadFile = File(...)):
     content = await file.read()
     img_bgr = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
     roi = extract_nose_roi_auto(img_bgr)
