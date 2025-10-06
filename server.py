@@ -193,7 +193,11 @@ app.add_middleware(
 )
 
 @app.post("/identify")
-async def identify(file: UploadFile = File(...)):
+async def identify(file: UploadFile = File(...), min_score: float = 0.4):
+    """
+    Identify pet nose print from uploaded image.
+    min_score: minimum matching score (0-1) to consider a valid match.
+    """
     content = await file.read()
     img_bgr = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
     roi = extract_nose_roi_auto(img_bgr)
@@ -210,8 +214,19 @@ async def identify(file: UploadFile = File(...)):
             best = max(best, s)
         scores.append({"pet_id": pet_id, "score": f"{best*100:.2f}%"})
 
-    scores.sort(key=lambda x: float(x["score"].replace("%","")), reverse=True)
-    return {"matches": scores[:3]}
+    if not filtered_scores:
+        # No match above threshold
+        return {"matches": [], "message": f"No match found above {min_score*100:.0f}% confidence."}
+
+    # Sort descending by score
+    filtered_scores.sort(key=lambda x: x["score"], reverse=True)
+
+    # Convert score to percentage string for consistency with frontend
+    for s in filtered_scores:
+        s["score"] = f"{s['score']*100:.2f}%"
+
+    # Return top 3 matches
+    return {"matches": filtered_scores[:3]}
 
 # ---------------------------
 # Inspect DB contents (runs once at startup)
