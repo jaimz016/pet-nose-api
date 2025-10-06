@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 import firebase_admin
 from firebase_admin import credentials, storage
 from sklearn.metrics import roc_curve
@@ -182,6 +183,14 @@ build_db()
 # FastAPI App
 # ---------------------------
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.post("/identify")
 async def identify(file: UploadFile = File(...)):
