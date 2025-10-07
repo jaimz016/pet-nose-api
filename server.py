@@ -40,16 +40,6 @@ orb = cv2.ORB_create(nfeatures=10000, scaleFactor=1.2, nlevels=8)
 # ---------------------------
 # Helper Functions
 # ---------------------------
-def preprocess_image(gray):
-    """Apply denoising, sharpening, and CLAHE for stronger feature extraction."""
-    gray = cv2.fastNlMeansDenoising(gray, h=10)
-    kernel = np.array([[0, -1, 0],
-                       [-1, 5, -1],
-                       [0, -1, 0]])
-    gray = cv2.filter2D(gray, -1, kernel)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
-    return clahe.apply(gray)
-
 def extract_nose_roi_auto(img_bgr, target_size=224, margin=0.2):
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
@@ -82,7 +72,7 @@ def extract_nose_roi_auto(img_bgr, target_size=224, margin=0.2):
     return resized
 
 def apply_CLAHE(gray):
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4,4))
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
     return clahe.apply(gray)
 
 def extract_orb(gray):
@@ -210,7 +200,7 @@ app.add_middleware(
 )
 
 @app.post("/identify")
-async def identify(file: UploadFile = File(...), min_score: float = 0.4):  # ← Set your threshold here
+async def identify(file: UploadFile = File(...), min_score: float = 0.3):  # ← Set your threshold here
     """
     Identify pet nose print from uploaded image.
     min_score: minimum matching score (0-1) to consider a valid match.
