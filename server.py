@@ -13,12 +13,13 @@ import json
 # ---------------------------
 # Firebase Init (robust for env JSON or file path)
 # ---------------------------
-cred_env = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
-bucket_name = os.environ.get("FIREBASE_STORAGE_BUCKET")
+cred_env = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")  # JSON string or path
+bucket_name = os.environ.get("FIREBASE_STORAGE_BUCKET")     # e.g. pawtag-6cf73.firebasestorage.app
 
 if not cred_env or not bucket_name:
-    raise RuntimeError("Set FIREBASE_SERVICE_ACCOUNT_JSON and FIREBASE_STORAGE_BUCKET env vars")
+    raise RuntimeError("Set FIREBASE_SERVICE_ACCOUNT_JSON and FIREBASE_STORAGE_BUCKET env vars in Render")
 
+# Parse JSON or treat as path
 try:
     # Try to parse as JSON string first
     cred_data = json.loads(cred_env)
@@ -27,9 +28,12 @@ try:
 except (json.JSONDecodeError, TypeError, ValueError):
     # If parsing fails, treat it as a file path
     cred = credentials.Certificate(cred_env)
-    print("Firebase: Using certificate file")
+    print("Firebase: Using certificate file path")
 
+# Initialize Firebase app with bucket
 firebase_admin.initialize_app(cred, {"storageBucket": bucket_name})
+
+# Now get the bucket reference safely
 bucket = storage.bucket(bucket_name)
 print("Firebase initialized successfully. Bucket:", bucket_name)
 # ---------------------------
