@@ -11,44 +11,85 @@ from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, r
 import json
 import tempfile
 
+print("🔧 Starting application initialization...")
+
 # ---------------------------
 # Firebase Init (Fixed)
 # ---------------------------
 def init_firebase():
+    print("🚀 Initializing Firebase...")
+    
     # Get the JSON content from environment variable
     firebase_creds_json = os.environ.get("FIREBASE_CREDENTIALS")
     bucket_name = os.environ.get("FIREBASE_STORAGE_BUCKET")
 
-    if not firebase_creds_json or not bucket_name:
-        raise RuntimeError("Set FIREBASE_CREDENTIALS and FIREBASE_STORAGE_BUCKET env vars")
+    print(f"📝 Firebase creds available: {firebase_creds_json is not None}")
+    print(f"📦 Bucket name available: {bucket_name is not None}")
+    
+    if bucket_name:
+        print(f"📦 Bucket name: {bucket_name}")
+    
+    if not firebase_creds_json:
+        raise RuntimeError("FIREBASE_CREDENTIALS environment variable not set")
+    if not bucket_name:
+        raise RuntimeError("FIREBASE_STORAGE_BUCKET environment variable not set")
 
     try:
+        print("🔍 Parsing Firebase credentials JSON...")
         # Parse the JSON to validate it
         creds_dict = json.loads(firebase_creds_json)
+        print("✅ JSON parsing successful")
         
-        # Create a temporary file
+        print("📄 Creating temporary credential file...")
+        # Create a temporary file with proper naming
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
             json.dump(creds_dict, temp_file)
             temp_path = temp_file.name
+        print(f"📄 Temporary file created at: {temp_path}")
         
-        # Initialize Firebase with the temp file
+        print("🔑 Initializing Firebase credentials...")
+        # Initialize Firebase with the temp file path
         cred = credentials.Certificate(temp_path)
-        firebase_admin.initialize_app(cred, {"storageBucket": bucket_name})
-        bucket = storage.bucket(bucket_name)
+        print("✅ Firebase credentials created")
         
+        print("🔥 Initializing Firebase app...")
+        firebase_admin.initialize_app(cred, {
+            "storageBucket": bucket_name
+        })
+        print("✅ Firebase app initialized")
+        
+        print("🪣 Getting storage bucket...")
+        # Get the bucket reference
+        bucket = storage.bucket()
+        print(f"✅ Storage bucket obtained: {bucket.name}")
+        
+        print("🧹 Cleaning up temporary file...")
         # Clean up the temp file
         os.unlink(temp_path)
+        print("✅ Temporary file cleaned up")
         
-        print("Firebase initialized successfully. Bucket:", bucket_name)
+        print("🎉 Firebase initialized successfully!")
         return bucket
         
     except json.JSONDecodeError as e:
+        print(f"❌ JSON parsing failed: {e}")
         raise RuntimeError(f"Invalid Firebase credentials JSON: {e}")
     except Exception as e:
+        print(f"❌ Firebase initialization failed: {e}")
+        print(f"🔍 Error type: {type(e).__name__}")
+        import traceback
+        print(f"📋 Stack trace: {traceback.format_exc()}")
         raise RuntimeError(f"Firebase initialization failed: {e}")
 
 # Initialize Firebase
-bucket = init_firebase()
+print("🔄 Attempting Firebase initialization...")
+try:
+    bucket = init_firebase()
+    print("✅ Firebase initialization completed successfully")
+except Exception as e:
+    print(f"❌ Firebase initialization failed: {e}")
+    # Don't raise the exception here, let the app start so we can see other errors
+    bucket = None
 # ---------------------------
 # ORB setup
 # ---------------------------
