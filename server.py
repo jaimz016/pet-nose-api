@@ -13,29 +13,37 @@ import json
 # ---------------------------
 # Firebase Init (robust for env JSON or file path)
 # ---------------------------
-cred_env = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")  # JSON string or path
-bucket_name = os.environ.get("FIREBASE_STORAGE_BUCKET")     # e.g. pawtag-6cf73.firebasestorage.app
+cred_env = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
+bucket_name = os.environ.get("FIREBASE_STORAGE_BUCKET")
 
 if not cred_env or not bucket_name:
-    raise RuntimeError("Set FIREBASE_SERVICE_ACCOUNT_JSON and FIREBASE_STORAGE_BUCKET env vars in Render")
+    raise RuntimeError("Set FIREBASE_SERVICE_ACCOUNT_JSON and FIREBASE_STORAGE_BUCKET env vars")
 
-# Parse JSON or treat as path
+print("Initializing Firebase...")
+
 try:
     # Try to parse as JSON string first
     cred_data = json.loads(cred_env)
     cred = credentials.Certificate(cred_data)
     print("Firebase: Using JSON string from environment variable")
-except (json.JSONDecodeError, TypeError, ValueError):
+except (json.JSONDecodeError, TypeError, ValueError) as e:
+    print(f"JSON parsing failed: {e}")
     # If parsing fails, treat it as a file path
-    cred = credentials.Certificate(cred_env)
-    print("Firebase: Using certificate file path")
+    try:
+        cred = credentials.Certificate(cred_env)
+        print("Firebase: Using certificate file path")
+    except Exception as file_error:
+        print(f"File path also failed: {file_error}")
+        raise RuntimeError("Firebase credentials configuration error")
 
 # Initialize Firebase app with bucket
-firebase_admin.initialize_app(cred, {"storageBucket": bucket_name})
-
-# Now get the bucket reference safely
-bucket = storage.bucket(bucket_name)
-print("Firebase initialized successfully. Bucket:", bucket_name)
+try:
+    firebase_admin.initialize_app(cred, {"storageBucket": bucket_name})
+    bucket = storage.bucket(bucket_name)
+    print("Firebase initialized successfully. Bucket:", bucket_name)
+except Exception as e:
+    print(f"Firebase initialization failed: {e}")
+    raise
 # ---------------------------
 # ORB setup
 # ---------------------------
