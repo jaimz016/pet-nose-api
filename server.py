@@ -9,31 +9,46 @@ from firebase_admin import credentials, storage
 from sklearn.metrics import roc_curve
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
 import json
+import tempfile
 
 # ---------------------------
-# Firebase Init (Using Secret File)
+# Firebase Init (Fixed)
 # ---------------------------
-cred_path = os.environ.get("FIREBASE_CREDENTIALS_FILE")
-bucket_name = os.environ.get("FIREBASE_STORAGE_BUCKET")
+def init_firebase():
+    # Get the JSON content from environment variable
+    firebase_creds_json = os.environ.get("FIREBASE_CREDENTIALS")
+    bucket_name = os.environ.get("FIREBASE_STORAGE_BUCKET")
 
-if not cred_path or not bucket_name:
-    raise RuntimeError("Set FIREBASE_CREDENTIALS_FILE and FIREBASE_STORAGE_BUCKET env vars")
+    if not firebase_creds_json or not bucket_name:
+        raise RuntimeError("Set FIREBASE_CREDENTIALS and FIREBASE_STORAGE_BUCKET env vars")
 
-print("Initializing Firebase with secret file...")
+    try:
+        # Parse the JSON to validate it
+        creds_dict = json.loads(firebase_creds_json)
+        
+        # Create a temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
+            json.dump(creds_dict, temp_file)
+            temp_path = temp_file.name
+        
+        # Initialize Firebase with the temp file
+        cred = credentials.Certificate(temp_path)
+        firebase_admin.initialize_app(cred, {"storageBucket": bucket_name})
+        bucket = storage.bucket(bucket_name)
+        
+        # Clean up the temp file
+        os.unlink(temp_path)
+        
+        print("Firebase initialized successfully. Bucket:", bucket_name)
+        return bucket
+        
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Invalid Firebase credentials JSON: {e}")
+    except Exception as e:
+        raise RuntimeError(f"Firebase initialization failed: {e}")
 
-try:
-    # Use the file path directly
-    cred = credentials.Certificate(cred_path)
-    print(f"Firebase: Using certificate file from {cred_path}")
-    
-    # Initialize Firebase app with bucket
-    firebase_admin.initialize_app(cred, {"storageBucket": bucket_name})
-    bucket = storage.bucket(bucket_name)
-    print("Firebase initialized successfully. Bucket:", bucket_name)
-    
-except Exception as e:
-    print(f"Firebase initialization failed: {e}")
-    raise
+# Initialize Firebase
+bucket = init_firebase()
 # ---------------------------
 # ORB setup
 # ---------------------------
