@@ -90,10 +90,13 @@ except Exception as e:
     print(f"❌ Firebase initialization failed: {e}")
     # Don't raise the exception here, let the app start so we can see other errors
     bucket = None
+
 # ---------------------------
 # ORB setup
 # ---------------------------
+print("🎯 Setting up ORB detector...")
 orb = cv2.ORB_create(nfeatures=10000, scaleFactor=1.2, nlevels=8)
+print("✅ ORB detector ready")
 
 # ---------------------------
 # Helper Functions
@@ -209,38 +212,64 @@ db = {}
 
 def build_db():
     global db
-    print("Building DB...")
-    blobs = list(bucket.list_blobs(prefix="noseprints/"))
-    for blob in blobs:
-        if not blob.name.lower().endswith((".jpg", ".png", ".jpeg")):
-            continue
+    print("🏗️ Building database from Firebase Storage...")
+    
+    if bucket is None:
+        print("❌ Cannot build DB - Firebase bucket is not available")
+        return
+        
+    try:
+        print("📡 Listing blobs from Firebase Storage...")
+        blobs = list(bucket.list_blobs(prefix="noseprints/"))
+        print(f"📁 Found {len(blobs)} blobs total")
+        
+        image_count = 0
+        for blob in blobs:
+            if not blob.name.lower().endswith((".jpg", ".png", ".jpeg")):
+                continue
+                
+            image_count += 1
+            print(f"🖼️ Processing image {image_count}: {blob.name}")
+            
+            pet_id = blob.name.split('/')[1]
+            print(f"🐾 Extracted pet ID: {pet_id}")
+            
+            content = blob.download_as_bytes()
+            img_bgr = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
+            print(f"📐 Image dimensions: {img_bgr.shape}")
 
-        pet_id = blob.name.split('/')[1]
-        content = blob.download_as_bytes()
-        img_bgr = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
+            roi = extract_nose_roi_auto(img_bgr)
+            preproc = apply_CLAHE(roi)
+            kp, des = extract_orb(preproc)
+            print(f"🔑 Found {len(kp) if kp else 0} keypoints")
 
-        roi = extract_nose_roi_auto(img_bgr)
-        preproc = apply_CLAHE(roi)
-        kp, des = extract_orb(preproc)
+            if pet_id not in db:
+                db[pet_id] = []
 
-        if pet_id not in db:
-            db[pet_id] = []
+            # Original
+            db[pet_id].append({"des": des, "kp": kp, "path": blob.name})
 
-        # Original
-        db[pet_id].append({"des": des, "kp": kp, "path": blob.name})
+            # Augmented versions
+            aug_images = augment_image(preproc)
+            print(f"🔄 Generated {len(aug_images)} augmented versions")
+            for aug in aug_images:
+                kp_a, des_a = extract_orb(aug)
+                db[pet_id].append({"des": des_a, "kp": kp_a, "path": blob.name + "_aug"})
 
-        # Augmented versions
-        for aug in augment_image(preproc):
-            kp_a, des_a = extract_orb(aug)
-            db[pet_id].append({"des": des_a, "kp": kp_a, "path": blob.name + "_aug"})
+        print(f"✅ DB build complete. Processed {image_count} images")
+        
+    except Exception as e:
+        print(f"❌ Error building database: {e}")
+        import traceback
+        print(f"📋 Stack trace: {traceback.format_exc()}")
 
-    print("DB build complete.")
-
+print("🔄 Building database...")
 build_db()
 
 # ---------------------------
 # FastAPI App
 # ---------------------------
+print("🚀 Creating FastAPI app...")
 app = FastAPI()
 
 origins = [
@@ -258,19 +287,25 @@ app.add_middleware(
 )
 
 @app.post("/identify")
-async def identify(file: UploadFile = File(...), min_score: float = 0.33):  # ← Set your threshold here
+async def identify(file: UploadFile = File(...), min_score: float = 0.33):
     """
     Identify pet nose print from uploaded image.
     min_score: minimum matching score (0-1) to consider a valid match.
     Default is 0.6 (60%).
     """
+    print(f"🔍 Identification request received. File: {file.filename}, Min score: {min_score}")
+    
     content = await file.read()
     img_bgr = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
+    print(f"📐 Uploaded image dimensions: {img_bgr.shape}")
+    
     roi = extract_nose_roi_auto(img_bgr)
     preproc = apply_CLAHE(roi)
     kp_q, des_q = extract_orb(preproc)
+    print(f"🔑 Query image keypoints: {len(kp_q) if kp_q else 0}")
 
     scores = []
+    print(f"🔎 Searching through {len(db)} pets in database...")
     for pet_id, entries in db.items():
         best = 0
         for e in entries:
@@ -279,12 +314,14 @@ async def identify(file: UploadFile = File(...), min_score: float = 0.33):  # �
             s = match_orb(des_q, des_db, kp_q, kp_db)
             best = max(best, s)
         scores.append({"pet_id": pet_id, "score": best, "score_percent": f"{best*100:.2f}%"})
+        print(f"🐾 Pet {pet_id}: best score = {best:.4f}")
 
     # Sort by raw score for comparison
     scores.sort(key=lambda x: x["score"], reverse=True)
     
     # Check if best match meets minimum threshold
     if not scores or scores[0]["score"] < min_score:
+        print("❌ No match found above threshold")
         return {
             "success": False,
             "message": "No matching pet found in database",
@@ -298,6 +335,7 @@ async def identify(file: UploadFile = File(...), min_score: float = 0.33):  # �
         for s in scores if s["score"] >= min_score
     ]
     
+    print(f"✅ Found {len(valid_matches)} valid matches")
     return {
         "success": True,
         "message": f"Found {len(valid_matches)} matching pet(s)",
@@ -307,21 +345,44 @@ async def identify(file: UploadFile = File(...), min_score: float = 0.33):  # �
 # ---------------------------
 # Inspect DB contents (runs once at startup)
 # ---------------------------
-print("Inspecting DB contents...")
+print("📊 Inspecting DB contents...")
 total_entries = 0
 for pet_id, entries in db.items():
-    print(f"\nPet ID: {pet_id}")
-    print(f"Total images (including augmented): {len(entries)}")
+    print(f"\n🐾 Pet ID: {pet_id}")
+    print(f"📁 Total images (including augmented): {len(entries)}")
     for e in entries:
         print(f" - {e['path']}")
     total_entries += len(entries)
-print(f"\nTotal entries in DB (all pets + augmented): {total_entries}")
+print(f"\n📈 Total entries in DB (all pets + augmented): {total_entries}")
+
+# ---------------------------
+# Health check endpoint
+# ---------------------------
+@app.get("/")
+async def root():
+    return {
+        "message": "PawTag Backend API", 
+        "status": "running",
+        "database_loaded": len(db) > 0,
+        "pets_in_db": len(db),
+        "firebase_ready": bucket is not None
+    }
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "healthy",
+        "firebase_initialized": bucket is not None,
+        "database_entries": sum(len(entries) for entries in db.values()),
+        "pets_in_database": len(db)
+    }
 
 # ---------------------------
 # Evaluation Endpoint
 # ---------------------------
 @app.get("/evaluate")
 async def evaluate(threshold: float = 0.3):
+    print(f"📊 Evaluation request with threshold: {threshold}")
     genuine_scores, impostor_scores = [], []
     pet_ids = list(db.keys())
 
@@ -367,7 +428,7 @@ async def evaluate(threshold: float = 0.3):
         acc_t = accuracy_score(y_true, y_pred_t)
         if acc_t > best_acc:
             best_acc, best_th = acc_t, t
-    print(f"Best Accuracy: {best_acc:.4f} at threshold {best_th:.2f}")
+    print(f"🎯 Best Accuracy: {best_acc:.4f} at threshold {best_th:.2f}")
     # -----------------------------------------------------
 
     # Metrics
@@ -386,6 +447,7 @@ async def evaluate(threshold: float = 0.3):
     fnr = 1 - tpr
     eer = fpr[np.nanargmin(np.abs(fpr - fnr))]
 
+    print("✅ Evaluation completed")
     return {
         "Confusion_Matrix": cm.tolist(),
         "Accuracy": float(acc),
@@ -396,3 +458,6 @@ async def evaluate(threshold: float = 0.3):
         "FNMR": float(fnmr),
         "EER": float(eer)
     }
+
+print("🎉 Application startup complete!")
+print("📡 Server is ready to handle requests")
